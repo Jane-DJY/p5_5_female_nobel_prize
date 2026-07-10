@@ -4,7 +4,8 @@ const INTRO_FRAMES = 26;
 const YEARS_PER_SEGMENT = 10;
 const SEGMENT_DURATION = 30;
 const MAX_FALL_FRAMES = 152;
-const TEXT_FADE_FRAMES = 10;
+const DEFAULT_OVERLAY_FADE_FRAMES = 60;
+const PILE_REVEAL_Y_RATIO = 0.5;
 const PILE_COLUMNS = 31;
 const PILE_LEFT = 70;
 const PILE_RIGHT = 1010;
@@ -19,15 +20,20 @@ const TRAIL_COLOR = [214, 232, 255];
 const FEMALE_GLOW = [255, 238, 122];
 const MALE_GLOW = [235, 244, 255];
 const TEXT_FONT = '"Songti SC", STSong, "Noto Serif CJK SC", SimSun, serif';
+const WATERMARK_LINES = ["爱可视化的简女士", "Jane of Visual Stories"];
+const WATERMARK_COLOR = [255, 255, 255];
+const WATERMARK_CENTER_ALPHA = 9;
+const WATERMARK_CORNER_ALPHA = 28;
 
 const visualConfig = {
-  starMinScale: 0.55,
-  starMaxScale: 1.3,
-  layoutChaos: 0.4,
-  settledMotion: 0.45,
+  starMinScale: 0.35,
+  starMaxScale: 1.55,
+  layoutChaos: 0.6,
+  settledMotion: 4,
+  bounceStrength: 3,
   tailThickness: 2.5,
   tailLength: 2.5,
-  whiteStarOpacity: 10,
+  whiteStarOpacity: 5,
   whiteStarGlow: 0,
   yellowStarGlow: 0,
   textSize: 50,
@@ -35,9 +41,12 @@ const visualConfig = {
   textLineGap: 64,
   textBoxAlpha: 0.05,
   textBoxHeight: 1,
+  overlayFadeFrames: 60,
   canvasWidth: 1080,
   canvasHeight: 1440,
-  canvasColor: "#2d60e5"
+  canvasColor: "#2d60e5",
+  watermarkSize: 3,
+  watermarkAlpha: 1
 };
 
 let meteors = [];
@@ -45,6 +54,8 @@ let skyDots = [];
 let timeSegments = [];
 let activeYear = 1901;
 let textBackdropBounds = null;
+let overlayRevealFrame = null;
+let overlayRevealHeight = null;
 let isPlaying = false;
 let playbackStartFrame = 0;
 
@@ -68,8 +79,10 @@ function draw() {
   const frame = getPlaybackFrame();
   activeYear = getActiveYear(frame);
 
+  const overlayAlpha = getOverlayAlpha(frame);
   drawMeteors(frame);
-  drawCenterStatement(frame);
+  drawCenterStatement(frame, overlayAlpha);
+  drawWatermark(overlayAlpha);
 }
 
 function windowResized() {
@@ -145,6 +158,8 @@ function buildTimeSegments() {
 
 function buildMeteors() {
   meteors = [];
+  overlayRevealFrame = null;
+  overlayRevealHeight = null;
   let index = 0;
   randomSeed(20250707);
 
@@ -203,6 +218,8 @@ function addYearMeteors(year, count, isFemale, startIndex) {
       fallDuration,
       drift,
       arcLift,
+      bounceSide: random([-1, 1]),
+      bouncePhase: random(0.82, 1.18),
       twinkle: random(TWO_PI)
     });
   }
@@ -280,9 +297,9 @@ function getTextBackdropLines(segment = null, counts = null) {
     shownFemale: window.NOBEL_TOTALS.femaleIndividuals
   };
   return [
-    `从1901到${textSegment.endYear || window.NOBEL_TOTALS.endYear}年`,
-    `共有 ${textCounts.shown}位诺奖得主`,
-    `其中${textCounts.shownFemale}位是女性`
+    `从 1901 到 ${textSegment.endYear || window.NOBEL_TOTALS.endYear} 年`,
+    `共有 ${textCounts.shown} 位诺奖得主`,
+    `其中 ${textCounts.shownFemale} 位是女性`
   ];
 }
 
@@ -438,7 +455,7 @@ function drawMeteors(frame) {
       if (age < 30) {
         drawIgnitionGlow(x, y, color, alpha, meteor, age);
       }
-      drawStarHead(meteor, x, y, color, alpha, meteor.twinkle + t * TWO_PI);
+      drawMeteorCore(meteor, x, y, color, alpha, t);
     }
   }
   blendMode(BLEND);
@@ -462,15 +479,37 @@ function drawSettledStar(meteor, color, frame) {
   const microMove = visualConfig.settledMotion * (meteor.isFemale ? 2.4 : 1.5);
   const driftX = sin(frame * 0.018 + meteor.twinkle) * microMove * motionFade;
   const driftY = cos(frame * 0.015 + meteor.twinkle * 1.3) * microMove * 0.7 * motionFade;
+  const bounce = getLandingBounce(meteor, settledAge);
+  const starReveal = easeOutCubic(constrain(settledAge / 14, 0, 1));
 
   drawStarHead(
     meteor,
-    meteor.settleX + driftX,
-    meteor.settleY + driftY,
+    meteor.settleX + driftX + bounce.x,
+    meteor.settleY + driftY + bounce.y,
     color,
     alpha,
-    phase
+    phase,
+    lerp(0.52, 1, starReveal)
   );
+}
+
+function getLandingBounce(meteor, settledAge) {
+  const strength = visualConfig.bounceStrength;
+  if (strength <= 0 || settledAge <= 0 || settledAge > 54) {
+    return { x: 0, y: 0 };
+  }
+
+  const t = constrain(settledAge / 54, 0, 1);
+  const decay = pow(1 - t, 2.2);
+  const size = getMeteorSize(meteor);
+  const amp = strength * size * (meteor.isFemale ? 1.45 : 1.1);
+  const wobble = sin(t * PI * 3.4 * meteor.bouncePhase) * decay;
+  const hop = abs(sin(t * PI * 2.15 * meteor.bouncePhase)) * decay;
+
+  return {
+    x: meteor.bounceSide * wobble * amp * 0.55,
+    y: -hop * amp
+  };
 }
 
 function drawTail(x1, y1, x2, y2, color, alpha, meteor) {
@@ -507,8 +546,23 @@ function drawIgnitionGlow(x, y, color, alpha, meteor, age) {
   circle(x, y, size * 2.2 * (1 - t * 0.45));
 }
 
-function drawStarHead(meteor, x, y, color, alpha, phase) {
-  drawStar(x, y, getMeteorSize(meteor), color, alpha, meteor.isFemale, phase);
+function drawMeteorCore(meteor, x, y, color, alpha, progress) {
+  const size = getMeteorSize(meteor);
+  const coreSize = size * (meteor.isFemale ? 0.78 : 0.62);
+  const coreAlpha = alpha * (meteor.isFemale ? 0.42 : 0.34);
+  const twinkle = 0.82 + sin(meteor.twinkle + progress * TWO_PI * 1.6) * 0.12;
+
+  noStroke();
+  fill(color[0], color[1], color[2], coreAlpha * 0.12);
+  circle(x, y, coreSize * 5.4 * twinkle);
+  fill(color[0], color[1], color[2], coreAlpha * 0.34);
+  circle(x, y, coreSize * 2.2 * twinkle);
+  fill(255, 250, 226, coreAlpha * 0.72);
+  circle(x, y, coreSize * 0.88 * twinkle);
+}
+
+function drawStarHead(meteor, x, y, color, alpha, phase, sizeScale = 1) {
+  drawStar(x, y, getMeteorSize(meteor) * sizeScale, color, alpha, meteor.isFemale, phase);
 }
 
 function getMeteorSize(meteor) {
@@ -645,17 +699,43 @@ function getShownCounts(frame) {
   };
 }
 
-function drawCenterStatement(frame) {
+function getOverlayAlpha(frame) {
+  const revealFrame = getOverlayRevealFrame();
+  const fadeFrames = max(1, visualConfig.overlayFadeFrames || DEFAULT_OVERLAY_FADE_FRAMES);
+  return easeOutCubic(constrain((frame - revealFrame) / fadeFrames, 0, 1));
+}
+
+function getOverlayRevealFrame() {
+  if (overlayRevealFrame !== null && overlayRevealHeight === height) {
+    return overlayRevealFrame;
+  }
+
+  const revealY = height * PILE_REVEAL_Y_RATIO;
+  let firstRevealFrame = Infinity;
+
+  for (const meteor of meteors) {
+    if (meteor.settleY <= revealY) {
+      firstRevealFrame = min(firstRevealFrame, ceil(meteor.impactFrame));
+    }
+  }
+
+  overlayRevealHeight = height;
+  overlayRevealFrame = Number.isFinite(firstRevealFrame) ? firstRevealFrame : INTRO_FRAMES;
+  return overlayRevealFrame;
+}
+
+function drawCenterStatement(frame, overlayAlpha) {
+  if (overlayAlpha <= 0) return;
+
   const counts = getShownCounts(frame);
   const segment = getActiveSegment(frame);
-  const fadeIn = easeOutCubic(constrain(frame / TEXT_FADE_FRAMES, 0, 1));
-  const textAlpha = 235 * fadeIn;
+  const textAlpha = 235 * overlayAlpha;
   const [lineOne, lineTwo, lineThree] = getTextBackdropLines(segment, counts);
   const textY = height * 0.36;
   const lineGap = visualConfig.textLineGap;
 
   noStroke();
-  fill(236, 241, 245, textAlpha);
+  fill(255, 255, 255, textAlpha);
   textAlign(CENTER, CENTER);
   applyCanvasTextStyle();
   textLeading(lineGap);
@@ -666,7 +746,7 @@ function drawCenterStatement(frame) {
   drawTrackedText(lineTwo, width / 2 + 2, textY + 2);
   drawTrackedText(lineThree, width / 2 + 2, textY + lineGap + 2);
 
-  fill(236, 241, 245, textAlpha);
+  fill(255, 255, 255, textAlpha);
   drawTrackedText(lineOne, width / 2, textY - lineGap);
   drawTrackedText(lineTwo, width / 2, textY);
 
@@ -718,6 +798,48 @@ function drawTextBackdrop(lines, textAlpha) {
   rectMode(CENTER);
   rect(bounds.cx, bounds.cy, bounds.w, bounds.h, 18);
   rectMode(CORNER);
+}
+
+function drawWatermark(overlayAlpha = 1) {
+  if (overlayAlpha <= 0) return;
+
+  drawCenterWatermark(overlayAlpha);
+  drawCornerWatermark(overlayAlpha);
+}
+
+function drawCenterWatermark(overlayAlpha) {
+  const sizeScale = visualConfig.watermarkSize;
+  const fontSize = max(6, min(width, height) * 0.008) * sizeScale;
+  const lineGap = max(9, min(width, height) * 0.013) * sizeScale;
+  drawWatermarkText(width / 2, height / 2, fontSize, lineGap, WATERMARK_CENTER_ALPHA, "center", "middle", overlayAlpha);
+}
+
+function drawCornerWatermark(overlayAlpha) {
+  const sizeScale = visualConfig.watermarkSize;
+  const fontSize = max(5.5, min(width, height) * 0.0065) * sizeScale;
+  const lineGap = max(8, min(width, height) * 0.01) * sizeScale;
+  drawWatermarkText(width - 30, height - 28, fontSize, lineGap, WATERMARK_CORNER_ALPHA, "right", "bottom", overlayAlpha);
+}
+
+function drawWatermarkText(x, y, fontSize, lineGap, alpha, align, baseline, overlayAlpha) {
+  const ctx = drawingContext;
+  const visibleAlpha = constrain(alpha * visualConfig.watermarkAlpha * overlayAlpha, 0, 255) / 255;
+
+  ctx.save();
+  ctx.font = `${fontSize}px ${TEXT_FONT}`;
+  ctx.textAlign = align;
+  ctx.textBaseline = baseline;
+  ctx.fillStyle = `rgba(${WATERMARK_COLOR[0]}, ${WATERMARK_COLOR[1]}, ${WATERMARK_COLOR[2]}, ${visibleAlpha})`;
+
+  if (baseline === "middle") {
+    ctx.fillText(WATERMARK_LINES[0], x, y - lineGap / 2);
+    ctx.fillText(WATERMARK_LINES[1], x, y + lineGap / 2);
+  } else {
+    ctx.fillText(WATERMARK_LINES[0], x, y - lineGap);
+    ctx.fillText(WATERMARK_LINES[1], x, y);
+  }
+
+  ctx.restore();
 }
 
 function getActiveSegment(frame) {

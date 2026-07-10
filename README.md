@@ -7,9 +7,10 @@
 - 男性：923
 - 组织：28 个，不进入星星计数
 
-第一版使用 aggregate-constrained 数据：总数、女性数、男性数严格匹配给定来源，逐年总数用于动画节奏铺排。后续可替换为 Nobel API 导出的逐年真实明细。
+数据按 Nobel 官方 API 的 laureates 列表计算：只统计个人获奖者，不统计组织；同一人多次获奖时按其第一次获奖年份计入，所以累计结尾对应 990 位个人获奖者、67 位女性个人。
 
 数据来源：
 
+- https://api.nobelprize.org/2.1/laureates?limit=1200
 - https://www.nobelprize.org/prizes/lists/nobel-prize-awarded-women/
 - https://www.nobelprize.org/prizes/lists/all-nobel-prizes/
